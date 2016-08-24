@@ -14,6 +14,8 @@ So i started to wire my joysticks and buttons to my raspberry pi, and I wrote th
 
 However, the Raspberry Pi Board B Rev 2 has a maximum of 21 usable GPIOs, not enough to wire all the 28 switches (2 joystick and 20 buttons) that a standard panel requires.
 
+UPDATE 0.1.6 : Added MCP3008 system
+
 UPDATE 0.1.5 : Added GPIO customization
 
 UPDATE 0.1.4 : Compatibily with rpi2 
@@ -175,6 +177,28 @@ sudo modprobe mk_arcade_joystick_rpi map=5 gpio=pin1,pin2,pin3,.....,pin12
 Where *pinx* is the number of the gpio you want. There are 12 posible gpio with **button order: Y-,Y+,X-,X+,start,select,a,b,tr,y,x,tl.** Use -1 for unused pins. For example `gpio=21,13,26,19,-1,-1,22,24,-1,-1,-1,-1` uses gpios 21,13,26,19 for axis and gpios 22 and 24 for A and B buttons, the rest of buttons are unused.
 
 The GPIO joystick 1 events will be reported to the file "/dev/input/js0" and the GPIO joystick 2  events will be reported to "/dev/input/js1"
+
+MCP3008 Analog can be enabled with the analog argument
+```shell
+sudo modprobe mk_arcade_joystick_rpi map=1 analog=1
+```
+
+By default the pins for SPI are
+- SPI_MISO_LINE = 16  
+- SPI_MOSI_LINE = 26
+- SPI_CLK_LINE  = 20
+- SPI_CS_LINE   = 21
+
+This can be changed with the argument spi
+```shell
+sudo modprobe mk_arcade_joystick_rpi map=1 analog=1 spi=16,26,20,21
+```
+
+The pins for spi are in the order
+- SPI_MISO_LINE 
+- SPI_MOSI_LINE
+- SPI_CLK_LINE 
+- SPI_CS_LINE  
 
 ### Auto load at startup ###
 

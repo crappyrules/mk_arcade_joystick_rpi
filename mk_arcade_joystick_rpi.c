@@ -54,15 +54,15 @@ MODULE_LICENSE("GPL");
 
 #define INP_GPIO(g) *(gpio+((g)/10)) &= ~(7<<(((g)%10)*3))
 #define OUT_GPIO(g) *(gpio+((g)/10)) |=  (1<<(((g)%10)*3))
-#define GPIO_READ(g)  *(gpio + 13) &= (1<<(g))
+#define GPIO_READ(g)  *(gpio + 13) >> g & 1
 
 #define SET_GPIO_ALT(g,a) *(gpio+(((g)/10))) |= (((a)<=3?(a)+4:(a)==4?3:2)<<(((g)%10)*3))
 
 #define GPIO_SET *(gpio+7)
 #define GPIO_CLR *(gpio+10)
 
-#define BSC1_BASE		(PERI_BASE + 0x804000)
-
+#define BSC1_BASE (PERI_BASE + 0x804000)
+#define SPI1_BASE (PERI_BASE + 0x204000)
 
 /*
  * MCP23017 Defines
@@ -108,8 +108,27 @@ MODULE_LICENSE("GPL");
 
 #define CLEAR_STATUS	BSC_S_CLKT|BSC_S_ERR|BSC_S_DONE
 
+/*
+ * Defines for SPI peripheral 
+ */
+
+#define SPI1_CS     *(spi1 + 0x00)
+#define SPI1_FIFO   *(spi1 + 0x01)
+#define SPI1_CLK    *(spi1 + 0x02)
+
+#define SPI_CS_TXD      (1 << 18)
+#define SPI_CS_RXD      (1 << 17)
+#define SPI_CS_DONE     (1 << 16)
+#define SPI_CS_TA       (1 << 7)
+#define SPI_CS_CLEAR_RX (1 << 5)
+#define SPI_CS_CLEAR_TX (1 << 4)
+#define SPI_CS_CPOL     (1 << 3)
+
+#define SPI_HARDWARE 0
+
 static volatile unsigned *gpio;
 static volatile unsigned *bsc1;
+static volatile unsigned *spi1;
 
 struct mk_config {
     int args[MK_MAX_DEVICES];
@@ -131,6 +150,26 @@ static struct gpio_config gpio_cfg __initdata;
 module_param_array_named(gpio, gpio_cfg.mk_arcade_gpio_maps_custom, int, &(gpio_cfg.nargs), 0);
 MODULE_PARM_DESC(gpio, "Numbers of custom GPIO for Arcade Joystick");
 
+
+static int analog = 0;
+module_param(analog, int, 0);
+MODULE_PARM_DESC(analog, "Enable MCP3008 Digital to Analog system");
+
+struct spi_config {
+    int spi_lines[4];
+    unsigned int nargs;
+};
+
+static struct spi_config spi_cfg __initdata;
+
+module_param_array_named(spi, spi_cfg.spi_lines, int, &(spi_cfg.nargs), 0);
+MODULE_PARM_DESC(spi, "Numbers of custom SPI Lines for MCP3008");
+
+static char SPI_MISO_LINE = 16;
+static char SPI_MOSI_LINE = 26;
+static char SPI_CLK_LINE  = 20;
+static char SPI_CS_LINE   = 21;
+
 enum mk_type {
     MK_NONE = 0,
     MK_ARCADE_GPIO,
@@ -148,7 +187,7 @@ struct mk_pad {
     enum mk_type type;
     char phys[32];
     int mcp23017addr;
-    int gpio_maps[12]
+    int gpio_maps[12];
 };
 
 struct mk_nin_gpio {
@@ -286,9 +325,101 @@ static void i2c_read(char dev_addr, char reg_addr, char *buf, unsigned short len
     } while ((!(BSC1_S & BSC_S_DONE)));
 }
 
+/* SPI UTILS */
+static void spi_init(void) {
+#if SPI_HARDWARE
+    INP_GPIO(8);
+    SET_GPIO_ALT(8, 0);
+    INP_GPIO(9);
+    SET_GPIO_ALT(9, 0);
+    INP_GPIO(10);
+    SET_GPIO_ALT(10, 0);
+    INP_GPIO(11);
+    SET_GPIO_ALT(11, 0);
+
+    SPI1_CS = 0;
+    SPI1_CS |= SPI_CS_CLEAR_RX | SPI_CS_CLEAR_TX;
+
+    //OUT_GPIO(SELECT_LINE);
+    //GPIO_SET = 1 << SELECT_LINE;
+#else
+    INP_GPIO(SPI_MISO_LINE);
+
+    INP_GPIO(SPI_MOSI_LINE);
+    OUT_GPIO(SPI_MOSI_LINE);
+    INP_GPIO(SPI_CLK_LINE);
+    OUT_GPIO(SPI_CLK_LINE);
+    INP_GPIO(SPI_CS_LINE);
+    OUT_GPIO(SPI_CS_LINE);
+    
+    GPIO_CLR = 1 << SPI_CLK_LINE;
+    GPIO_CLR = 1 << SPI_MISO_LINE;
+    GPIO_CLR = 1 << SPI_MOSI_LINE;
+    GPIO_SET = 1 << SPI_CS_LINE;
+#endif
+}
+
+#if SPI_HARDWARE
+static void wait_spi_done(void) {
+    while ((!((SPI1_CS) & SPI_CS_DONE))) {
+        udelay(100);
+    }
+}
+#endif
+
+// Function to read a number of bytes into a  buffer from the FIFO of the I2C controller
+
+static void spi_transfer(char * tbuf, char * rbuf, unsigned short len) {
+#if SPI_HARDWARE
+    SPI1_CS |= SPI_CS_CLEAR_RX | SPI_CS_CLEAR_TX;
+    SPI1_CS |= SPI_CS_TA;
+
+    int tx_count = 0;
+    int rx_count = 0;
+    while((tx_count < len) || (rx_count < len)) {
+        /* TX fifo not full, so add some more bytes */
+        while(((SPI1_CS & SPI_CS_TXD)) && (tx_count < len)) {
+           SPI1_FIFO = tbuf[tx_count];
+           tx_count++;
+        }
+        /* Rx fifo not empty, so get the next received bytes */
+        while((SPI1_CS & SPI_CS_RXD) && (rx_count < len)) {
+           rbuf[rx_count] = SPI1_FIFO;
+           rx_count++;
+        }
+    }
+
+    wait_spi_done();
+
+    SPI1_CS &= ~SPI_CS_TA;
+#else
+    GPIO_CLR = 1 << SPI_CS_LINE;
+
+    int i;
+    for (i = 0; i < len; i++) {
+        udelay(100);
+        int j;
+        for (j = 7; j >= 0; j--) {
+            if (tbuf[i] >> j & 1) GPIO_SET = 1 << SPI_MOSI_LINE;
+            else GPIO_CLR = 1 << SPI_MOSI_LINE;
+
+            udelay(100);
+            GPIO_SET = 1 << SPI_CLK_LINE;
+
+            if (GPIO_READ(SPI_MISO_LINE)) rbuf[i] |= 1 << j;
+            else rbuf[i] &= ~(1 << j);
+
+
+            udelay(100);
+            GPIO_CLR = 1 << SPI_CLK_LINE;
+        }
+    }
+    GPIO_SET = 1 << SPI_CS_LINE;
+#endif
+}
 /*  ------------------------------------------------------------------------------- */
 
-static void mk_mcp23017_read_packet(struct mk_pad * pad, unsigned char *data) {
+static void mk_mcp23017_read_packet(struct mk_pad * pad, unsigned short *data) {
     int i;
     char resultA, resultB;
     i2c_read(pad->mcp23017addr, MPC23017_GPIOA_READ, &resultA, 1);
@@ -308,7 +439,26 @@ static void mk_mcp23017_read_packet(struct mk_pad * pad, unsigned char *data) {
     }
 }
 
-static void mk_gpio_read_packet(struct mk_pad * pad, unsigned char *data) {
+static void mk_mcp3008_read_packet(struct mk_pad * pad, unsigned short *data) {
+    char send_data[] = {0x01, 0x80, 0x00};
+    char receive_data[] = {0x00, 0x00, 0x00};
+    
+    spi_transfer(send_data, receive_data, 3);
+
+    int x = (receive_data[1] << 8 | receive_data[2]) & 0x3FF;
+    
+    send_data[1] = 0x90;
+    spi_transfer(send_data, receive_data, 3);
+
+    int y = (receive_data[1] << 8 | receive_data[2]) & 0x3FF;
+
+    //printk("X: %d Y: %d\n", x, y);
+
+    data[mk_max_arcade_buttons+1] = y;
+    data[mk_max_arcade_buttons+2] = x;
+}
+
+static void mk_gpio_read_packet(struct mk_pad * pad, unsigned short *data) {
     int i;
 
     for (i = 0; i < mk_max_arcade_buttons; i++) {
@@ -321,11 +471,15 @@ static void mk_gpio_read_packet(struct mk_pad * pad, unsigned char *data) {
 
 }
 
-static void mk_input_report(struct mk_pad * pad, unsigned char * data) {
-    struct input_dev * dev = pad->dev;
+static void mk_input_report(struct mk_pad * pad, unsigned short * data) { struct input_dev * dev = pad->dev;
     int j;
     input_report_abs(dev, ABS_Y, !data[0]-!data[1]);
     input_report_abs(dev, ABS_X, !data[2]-!data[3]);
+    if (analog) {
+        //printk("X: %d Y: %d\n", data[mk_max_arcade_buttons+1], data[mk_max_arcade_buttons+2]);
+        input_report_abs(dev, ABS_RY, data[mk_max_arcade_buttons+1]);
+        input_report_abs(dev, ABS_RX, data[mk_max_arcade_buttons+2]);
+    }
     for (j = 4; j < mk_max_arcade_buttons; j++) {
         input_report_key(dev, mk_arcade_gpio_btn[j - 4], data[j]);
     }
@@ -333,8 +487,7 @@ static void mk_input_report(struct mk_pad * pad, unsigned char * data) {
 }
 
 static void mk_process_packet(struct mk *mk) {
-
-    unsigned char data[mk_max_arcade_buttons];
+    unsigned short data[mk_max_arcade_buttons+2];
     struct mk_pad *pad;
     int i;
 
@@ -342,10 +495,12 @@ static void mk_process_packet(struct mk *mk) {
         pad = &mk->pads[i];
         if (pad->type == MK_ARCADE_GPIO || pad->type == MK_ARCADE_GPIO_BPLUS || pad->type == MK_ARCADE_GPIO_TFT || pad->type == MK_ARCADE_GPIO_CUSTOM) {
             mk_gpio_read_packet(pad, data);
+            if (analog) mk_mcp3008_read_packet(pad, data);
             mk_input_report(pad, data);
         }
         if (pad->type == MK_ARCADE_MCP23017) {
             mk_mcp23017_read_packet(pad, data);
+            if (analog) mk_mcp3008_read_packet(pad, data);
             mk_input_report(pad, data);
         }
     }
@@ -440,9 +595,14 @@ static int __init mk_setup_pad(struct mk *mk, int idx, int pad_type_arg) {
     input_dev->close = mk_close;
 
     input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
+    //input_dev->absbit[0] = BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) | BIT_MASK(ABS_RX) | BIT_MASK(ABS_RY);
 
     for (i = 0; i < 2; i++)
         input_set_abs_params(input_dev, ABS_X + i, -1, 1, 0, 0);
+    if (analog) {
+        for (i = 0; i < 2; i++)
+            input_set_abs_params(input_dev, ABS_RX + i, 0, 1023, 4, 8);
+    }
     for (i = 0; i < mk_max_arcade_buttons - 4; i++)
         __set_bit(mk_arcade_gpio_btn[i], input_dev->keybit);
 
@@ -496,6 +656,29 @@ static int __init mk_setup_pad(struct mk *mk, int idx, int pad_type_arg) {
         // Known bug : if you remove this line, you will not have pullups on GPIOB 
         i2c_write(pad->mcp23017addr, MPC23017_GPIOB_PULLUPS_MODE, &FF, 1);
         udelay(1000);
+    }
+
+    if (analog) {
+		if (spi_cfg.nargs == 4) {
+			SPI_MISO_LINE = spi_cfg.spi_lines[0];
+			SPI_MOSI_LINE = spi_cfg.spi_lines[1];
+			SPI_CLK_LINE = spi_cfg.spi_lines[2];
+			SPI_CS_LINE = spi_cfg.spi_lines[3];
+		}
+
+        spi_init();
+        
+        //Toggle clock line
+#if SPI_HARDWARE 
+        SPI1_CS |= SPI_CS_CPOL;
+        SPI1_CS &= ~SPI_CS_CPOL;
+#else
+        GPIO_SET = 1 << SPI_CLK_LINE;
+        GPIO_CLR = 1 << SPI_CLK_LINE;
+#endif
+        
+        udelay(1000);
+        printk("Analog is ON!");
     }
 
     err = input_register_device(pad->dev);
@@ -575,6 +758,12 @@ static int __init mk_init(void) {
         pr_err("io remap failed\n");
         return -EBUSY;
     }
+#if SPI_HARDWARE
+    if ((spi1 = ioremap(SPI1_BASE, 0xB0)) == NULL) {
+        pr_err("io remap failed\n");
+        return -EBUSY;
+    }
+#endif
     if (mk_cfg.nargs < 1) {
         pr_err("at least one device must be specified\n");
         return -EINVAL;
@@ -592,6 +781,9 @@ static void __exit mk_exit(void) {
 
     iounmap(gpio);
     iounmap(bsc1);
+#if SPI_HARDWARE
+    iounmap(spi1);
+#endif
 }
 
 module_init(mk_init);
