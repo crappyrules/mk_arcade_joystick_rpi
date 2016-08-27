@@ -44,6 +44,9 @@ MODULE_LICENSE("GPL");
 
 #define MK_MAX_DEVICES		9
 
+//This is not defined for me?
+#define RPI2
+
 #ifdef RPI2
 #define PERI_BASE        0x3F000000
 #else
@@ -552,10 +555,12 @@ static int __init mk_setup_pad(struct mk *mk, int idx, int pad_type_arg) {
 
     pad_type = pad_type_arg;
 
-    if (pad_type < 1 || pad_type >= MK_MAX) {
+    if (pad_type < 1) {
         pr_err("Pad type %d unknown\n", pad_type);
         return -EINVAL;
-    }
+	} else if (pad_type > MK_MAX) {
+		pad_type = MK_ARCADE_MCP23017;
+	}
 
     if (pad_type == MK_ARCADE_GPIO_CUSTOM) {
 
