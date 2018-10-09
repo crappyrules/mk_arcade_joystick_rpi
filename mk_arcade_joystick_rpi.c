@@ -125,8 +125,6 @@ MODULE_LICENSE("GPL");
 #define SPI_CS_CLEAR_TX (1 << 4)
 #define SPI_CS_CPOL (1 << 3)
 
-#define SPI_HARDWARE 0
-
 static volatile unsigned *gpio;
 static volatile unsigned *bsc1;
 static volatile unsigned *spi1;
@@ -346,22 +344,7 @@ static void i2c_read(char dev_addr, char reg_addr, char *buf, unsigned short len
 /* SPI UTILS */
 static void spi_init(void)
 {
-#if SPI_HARDWARE
-    INP_GPIO(8);
-    SET_GPIO_ALT(8, 0);
-    INP_GPIO(9);
-    SET_GPIO_ALT(9, 0);
-    INP_GPIO(10);
-    SET_GPIO_ALT(10, 0);
-    INP_GPIO(11);
-    SET_GPIO_ALT(11, 0);
 
-    SPI1_CS = 0;
-    SPI1_CS |= SPI_CS_CLEAR_RX | SPI_CS_CLEAR_TX;
-
-    //OUT_GPIO(SELECT_LINE);
-    //GPIO_SET = 1 << SELECT_LINE;
-#else
     INP_GPIO(SPI_MISO_LINE);
 
     INP_GPIO(SPI_MOSI_LINE);
@@ -375,49 +358,12 @@ static void spi_init(void)
     GPIO_CLR = 1 << SPI_MISO_LINE;
     GPIO_CLR = 1 << SPI_MOSI_LINE;
     GPIO_SET = 1 << SPI_CS_LINE;
-#endif
 }
-
-#if SPI_HARDWARE
-static void wait_spi_done(void)
-{
-    while ((!((SPI1_CS)&SPI_CS_DONE)))
-    {
-        udelay(100);
-    }
-}
-#endif
 
 // Function to read a number of bytes into a  buffer from the FIFO of the I2C controller
 
 static void spi_transfer(char *tbuf, char *rbuf, unsigned short len)
 {
-#if SPI_HARDWARE
-    SPI1_CS |= SPI_CS_CLEAR_RX | SPI_CS_CLEAR_TX;
-    SPI1_CS |= SPI_CS_TA;
-
-    int tx_count = 0;
-    int rx_count = 0;
-    while ((tx_count < len) || (rx_count < len))
-    {
-        /* TX fifo not full, so add some more bytes */
-        while (((SPI1_CS & SPI_CS_TXD)) && (tx_count < len))
-        {
-            SPI1_FIFO = tbuf[tx_count];
-            tx_count++;
-        }
-        /* Rx fifo not empty, so get the next received bytes */
-        while ((SPI1_CS & SPI_CS_RXD) && (rx_count < len))
-        {
-            rbuf[rx_count] = SPI1_FIFO;
-            rx_count++;
-        }
-    }
-
-    wait_spi_done();
-
-    SPI1_CS &= ~SPI_CS_TA;
-#else
     GPIO_CLR = 1 << SPI_CS_LINE;
 
     int i;
@@ -445,7 +391,6 @@ static void spi_transfer(char *tbuf, char *rbuf, unsigned short len)
         }
     }
     GPIO_SET = 1 << SPI_CS_LINE;
-#endif
 }
 /*  ------------------------------------------------------------------------------- */
 
@@ -742,13 +687,8 @@ static int __init mk_setup_pad(struct mk *mk, int idx, int pad_type_arg)
         spi_init();
 
         //Toggle clock line
-#if SPI_HARDWARE
-        SPI1_CS |= SPI_CS_CPOL;
-        SPI1_CS &= ~SPI_CS_CPOL;
-#else
         GPIO_SET = 1 << SPI_CLK_LINE;
         GPIO_CLR = 1 << SPI_CLK_LINE;
-#endif
 
         udelay(1000);
         printk("Analog is ON!");
@@ -839,13 +779,6 @@ static int __init mk_init(void)
         pr_err("io remap failed\n");
         return -EBUSY;
     }
-#if SPI_HARDWARE
-    if ((spi1 = ioremap(SPI1_BASE, 0xB0)) == NULL)
-    {
-        pr_err("io remap failed\n");
-        return -EBUSY;
-    }
-#endif
     if (mk_cfg.nargs < 1)
     {
         pr_err("at least one device must be specified\n");
@@ -867,9 +800,6 @@ static void __exit mk_exit(void)
 
     iounmap(gpio);
     iounmap(bsc1);
-#if SPI_HARDWARE
-    iounmap(spi1);
-#endif
 }
 
 module_init(mk_init);
