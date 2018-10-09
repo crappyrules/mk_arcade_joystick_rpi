@@ -113,10 +113,6 @@ MODULE_LICENSE("GPL");
  * Defines for SPI peripheral 
  */
 
-#define SPI1_CS *(spi1 + 0x00)
-#define SPI1_FIFO *(spi1 + 0x01)
-#define SPI1_CLK *(spi1 + 0x02)
-
 #define SPI_CS_TXD (1 << 18)
 #define SPI_CS_RXD (1 << 17)
 #define SPI_CS_DONE (1 << 16)
