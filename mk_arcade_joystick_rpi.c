@@ -98,10 +98,6 @@ static struct gpio_config gpio_cfg __initdata;
 module_param_array_named(gpio, gpio_cfg.mk_arcade_gpio_maps_custom, int, &(gpio_cfg.nargs), 0);
 MODULE_PARM_DESC(gpio, "Numbers of custom GPIO for Arcade Joystick");
 
-static int analog = 0;
-module_param(analog, int, 0);
-MODULE_PARM_DESC(analog, "Enable MCP3008 Digital to Analog system");
-
 struct spi_config
 {
     int spi_lines[4];
@@ -173,7 +169,7 @@ static const int mk_arcade_gpio_maps[] = {4, 17, 27, 22, 10, 9, 25, 24, 23, 18, 
 static const int mk_arcade_gpio_maps_bplus[] = {11, 5, 6, 13, 19, 26, 21, 20, 16, 12, 7, 8};
 
 static const short mk_arcade_gpio_btn[] = {
-    BTN_START, BTN_SELECT, BTN_A, BTN_B, BTN_TR, BTN_Y, BTN_X, BTN_TL};
+    BTN_START, BTN_SELECT, BTN_EAST, BTN_SOUTH, BTN_TR, BTN_WEST, BTN_NORTH, BTN_TL};
 
 static const char *mk_names[] = {
     NULL, "GPIO Controller 1", "GPIO Controller 2", "GPIO Controller 1", "GPIO Controller 1"};
@@ -268,17 +264,29 @@ static void mk_mcp3008_read_packet(struct mk_pad *pad, unsigned short *data)
 
     spi_transfer(send_data, receive_data, 3);
 
-    int x = (receive_data[1] << 8 | receive_data[2]) & 0x3FF;
+    int rx = (receive_data[1] << 8 | receive_data[2]) & 0x3FF;
 
     send_data[1] = 0x90;
+    spi_transfer(send_data, receive_data, 3);
+
+    int ry = (receive_data[1] << 8 | receive_data[2]) & 0x3FF;
+
+    send_data[1] = 0xa0;
+    spi_transfer(send_data, receive_data, 3);
+
+    int x = (receive_data[1] << 8 | receive_data[2]) & 0x3FF;
+
+    send_data[1] = 0xb0;
     spi_transfer(send_data, receive_data, 3);
 
     int y = (receive_data[1] << 8 | receive_data[2]) & 0x3FF;
 
     //printk("X: %d Y: %d\n", x, y);
 
-    data[mk_max_arcade_buttons + 1] = y;
-    data[mk_max_arcade_buttons + 2] = x;
+    data[mk_max_arcade_buttons + 1] = 1023 - ry;
+    data[mk_max_arcade_buttons + 2] = rx;
+    data[mk_max_arcade_buttons + 3] = 1023 - y;
+    data[mk_max_arcade_buttons + 4] = x;
 }
 
 static void mk_gpio_read_packet(struct mk_pad *pad, unsigned short *data)
@@ -304,14 +312,43 @@ static void mk_input_report(struct mk_pad *pad, unsigned short *data)
 {
     struct input_dev *dev = pad->dev;
     int j;
-    input_report_abs(dev, ABS_Y, !data[0] - !data[1]);
-    input_report_abs(dev, ABS_X, !data[2] - !data[3]);
-    if (analog)
+    if(!data[0] - !data[1] < 0)
     {
-        //printk("X: %d Y: %d\n", data[mk_max_arcade_buttons+1], data[mk_max_arcade_buttons+2]);
-        input_report_abs(dev, ABS_RY, data[mk_max_arcade_buttons + 1]);
-        input_report_abs(dev, ABS_RX, data[mk_max_arcade_buttons + 2]);
+        input_report_key(dev, BTN_DPAD_UP, 0);
+        input_report_key(dev, BTN_DPAD_DOWN, 1);
     }
+    else if(!data[0] - !data[1] > 0)
+    {
+        input_report_key(dev, BTN_DPAD_UP, 1);
+        input_report_key(dev, BTN_DPAD_DOWN, 0);
+    }
+    else
+    {
+        input_report_key(dev, BTN_DPAD_UP, 0);
+        input_report_key(dev, BTN_DPAD_DOWN, 0);
+    }
+    if(!data[2] - !data[3] < 0)
+    {
+        input_report_key(dev, BTN_DPAD_LEFT, 0);
+        input_report_key(dev, BTN_DPAD_RIGHT, 1);
+    }
+    else if(!data[2] - !data[3] > 0)
+    {
+        input_report_key(dev, BTN_DPAD_LEFT, 1);
+        input_report_key(dev, BTN_DPAD_RIGHT, 0);
+    }
+    else
+    {
+        input_report_key(dev, BTN_DPAD_LEFT, 0);
+        input_report_key(dev, BTN_DPAD_RIGHT, 0);
+    }
+    input_report_abs(dev, ABS_HAT0Y, !data[0] - !data[1]);
+    input_report_abs(dev, ABS_HAT0X, !data[2] - !data[3]);
+    //printk("X: %d Y: %d\n", data[mk_max_arcade_buttons+1], data[mk_max_arcade_buttons+2]);
+    input_report_abs(dev, ABS_RY, data[mk_max_arcade_buttons + 1]);
+    input_report_abs(dev, ABS_RX, data[mk_max_arcade_buttons + 2]);
+    input_report_abs(dev, ABS_Y, data[mk_max_arcade_buttons + 3]);
+    input_report_abs(dev, ABS_X, data[mk_max_arcade_buttons + 4]);
     for (j = 4; j < mk_max_arcade_buttons; j++)
     {
         input_report_key(dev, mk_arcade_gpio_btn[j - 4], data[j]);
@@ -321,7 +358,7 @@ static void mk_input_report(struct mk_pad *pad, unsigned short *data)
 
 static void mk_process_packet(struct mk *mk)
 {
-    unsigned short data[mk_max_arcade_buttons + 2];
+    unsigned short data[mk_max_arcade_buttons + 4];
     struct mk_pad *pad;
     int i;
 
@@ -331,8 +368,7 @@ static void mk_process_packet(struct mk *mk)
         if (pad->type == MK_ARCADE_GPIO || pad->type == MK_ARCADE_GPIO_BPLUS || pad->type == MK_ARCADE_GPIO_CUSTOM)
         {
             mk_gpio_read_packet(pad, data);
-            if (analog)
-                mk_mcp3008_read_packet(pad, data);
+            mk_mcp3008_read_packet(pad, data);
             mk_input_report(pad, data);
         }
     }
@@ -437,15 +473,18 @@ static int __init mk_setup_pad(struct mk *mk, int idx, int pad_type_arg)
     input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
     //input_dev->absbit[0] = BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) | BIT_MASK(ABS_RX) | BIT_MASK(ABS_RY);
 
-    for (i = 0; i < 2; i++)
-        input_set_abs_params(input_dev, ABS_X + i, -1, 1, 0, 0);
-    if (analog)
-    {
-        for (i = 0; i < 2; i++)
-            input_set_abs_params(input_dev, ABS_RX + i, 0, 1023, 4, 8);
-    }
+    input_set_abs_params(input_dev, ABS_HAT0X, -1, 1, 0, 0);
+    input_set_abs_params(input_dev, ABS_HAT0Y, -1, 1, 0, 0);
+    input_set_abs_params(input_dev, ABS_RX, 0, 1023, 4, 8);
+    input_set_abs_params(input_dev, ABS_RY, 0, 1023, 4, 8);
+    input_set_abs_params(input_dev, ABS_X + i, 0, 1023, 4, 8);
+    input_set_abs_params(input_dev, ABS_Y + i, 0, 1023, 4, 8);
     for (i = 0; i < mk_max_arcade_buttons - 4; i++)
         __set_bit(mk_arcade_gpio_btn[i], input_dev->keybit);
+    __set_bit(BTN_DPAD_UP, input_dev->keybit);
+    __set_bit(BTN_DPAD_DOWN, input_dev->keybit);
+    __set_bit(BTN_DPAD_LEFT, input_dev->keybit);
+    __set_bit(BTN_DPAD_RIGHT, input_dev->keybit);
 
     mk->pad_count[pad_type]++;
 
@@ -474,25 +513,22 @@ static int __init mk_setup_pad(struct mk *mk, int idx, int pad_type_arg)
     setGpioPullUps(getPullUpMask(pad->gpio_maps));
     printk("GPIO configured for pad%d\n", idx);
 
-    if (analog)
+    if (spi_cfg.nargs == 4)
     {
-        if (spi_cfg.nargs == 4)
-        {
-            SPI_MISO_LINE = spi_cfg.spi_lines[0];
-            SPI_MOSI_LINE = spi_cfg.spi_lines[1];
-            SPI_CLK_LINE = spi_cfg.spi_lines[2];
-            SPI_CS_LINE = spi_cfg.spi_lines[3];
-        }
-
-        spi_init();
-
-        //Toggle clock line
-        GPIO_SET = 1 << SPI_CLK_LINE;
-        GPIO_CLR = 1 << SPI_CLK_LINE;
-
-        udelay(1000);
-        printk("Analog is ON!");
+        SPI_MISO_LINE = spi_cfg.spi_lines[0];
+        SPI_MOSI_LINE = spi_cfg.spi_lines[1];
+        SPI_CLK_LINE = spi_cfg.spi_lines[2];
+        SPI_CS_LINE = spi_cfg.spi_lines[3];
     }
+
+    spi_init();
+
+    //Toggle clock line
+    GPIO_SET = 1 << SPI_CLK_LINE;
+    GPIO_CLR = 1 << SPI_CLK_LINE;
+
+    udelay(1000);
+    printk("Analog is ON!");
 
     err = input_register_device(pad->dev);
     if (err)
